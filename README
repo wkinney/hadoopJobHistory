@@ -1,0 +1,6 @@
+Usage: hadoopJobHistory.py
+	-l,	--logDir=DIRECTORY
+	-c,	--confDir=DIRECTORY
+
+Parses hadoop log files (Job Tracker's /logs/history/done/*)
+
