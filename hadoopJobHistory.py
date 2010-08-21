@@ -50,8 +50,8 @@ def main():
 		populateMachineTimes(logDir + "/" + fname, confDir)
 # TODO conf
 
-# nj-emperor_1281734026113_job_201008131613_1386_conf.xml
-CONF_FILE_FORMAT = 'nj-emperor_*_%(jobId)s_conf.xml'
+# <hostname>_1281734026113_job_201008131613_1386_conf.xml
+CONF_FILE_FORMAT = '*_%(jobId)s_conf.xml'
 MAPRED_MAPPER_CLASS_KEY_NAMES = 'mapred.mapper.class', 'mapreduce.map.class'
 
 
