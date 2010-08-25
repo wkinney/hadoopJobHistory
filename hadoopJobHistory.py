@@ -38,64 +38,116 @@ def main():
 			confDir = a
 		else:
 			assert False, "unhandled option"
-	if (logDir is None or confDir is None):
+	if logDir is None or confDir is None:
 		usage()
 		sys.exit(2)
-		
-	# conf logging
-	
-		
-	dirList = os.listdir(logDir)
-	for fname in dirList:		
-		populateMachineTimes(logDir + "/" + fname, confDir)
-# TODO conf
-
-# <hostname>_1281734026113_job_201008131613_1386_conf.xml
-CONF_FILE_FORMAT = '*_%(jobId)s_conf.xml'
-MAPRED_MAPPER_CLASS_KEY_NAMES = 'mapred.mapper.class', 'mapreduce.map.class'
-
+	printJobHistory(logDir, confDir)
 
 def usage():
 	print "Usage: hadoopJobHistory.py\n\t-l,\t--logDir=DIRECTORY\n\t-c,\t--confDir=DIRECTORY"
 
-def populateMachineTimes(jobFName, confDir):	
-	jobId, timesForMachine = getMachineTimes(jobFName)
+# e.g. <hostname>_1281734026113_job_201008131613_1386_conf.xml
+CONF_FILE_FORMAT = '*_%(jobId)s_conf.xml'
+MAPRED_MAPPER_CLASS_KEY_NAMES = 'mapred.mapper.class', 'mapreduce.map.class'
+
+def printJobHistory(logDir, confDir):
+	# Jobs: jobId, mapClass, jobLaunchTime
+	# Tasks: jobId, mapClass, jobLaunchTime, taskAttemptId, machineName, taskCompletionTime
+	jobs = []
+	tasks = []
+	dirList = os.listdir(logDir)
+	for fname in dirList:
+		populateJobDetails(os.path.join(logDir, fname), confDir, jobs, tasks)
+			
+	#outputTotalMachinePerformanceNormalizedByMapClass(tasks)
+	print 'jobId,mapClass,jobLaunchTime,taskAttemptId,machineName,taskCompletionTime'
+	for task in tasks:
+		print ','.join(map(str, task))
+		
+
+def cleanMachineString(machine):
+	pass
+		
+def outputTotalMachinePerformanceNormalizedByMapClass(tasks):
+	avgMachineForJobTaskTimes = dict()
+	avgMachineTaskTimes = dict()
+	maxAvgJobClassTaskTimes = dict()
+	for task in tasks:
+		key = tuple([task[1], long(cleanMachineString(task[4]))])
+		if key not in avgMachineForJobTaskTimes:
+			avgMachineForJobTaskTimes[key] = []
+		avgMachineForJobTaskTimes[key].append(task[5])
+	for jobMachineKey in avgMachineForJobTaskTimes.keys():
+		avg = float(sum(avgMachineForJobTaskTimes[jobMachineKey])) / float(len(avgMachineForJobTaskTimes[jobMachineKey]))
+		avgMachineForJobTaskTimes[jobMachineKey] = avg;
+		# map maxes for map classes
+		if jobMachineKey[0] not in maxAvgJobClassTaskTimes:
+			maxAvgJobClassTaskTimes[jobMachineKey[0]] = avg
+		elif avg > maxAvgJobClassTaskTimes[jobMachineKey[0]]:
+			maxAvgJobClassTaskTimes[jobMachineKey[0]] = avg
+	# normalize times
+	for jobMachineKey in avgMachineForJobTaskTimes.keys():
+		normalizedAvg = avgMachineForJobTaskTimes[jobMachineKey] / float(maxAvgJobClassTaskTimes[jobMachineKey[0]])
+		avgMachineForJobTaskTimes[jobMachineKey] = normalizedAvg * 100
+	
+	for jobMachineKey in avgMachineForJobTaskTimes.keys():
+		if jobMachineKey[1] not in avgMachineTaskTimes:
+			avgMachineTaskTimes[jobMachineKey[1]] = []
+		avgMachineTaskTimes[jobMachineKey[1]].append(avgMachineForJobTaskTimes[jobMachineKey])
+		
+	for machine in avgMachineTaskTimes.keys():
+		avgMachineTime = sum(avgMachineTaskTimes[machine]) / float(len(avgMachineTaskTimes[machine]))
+		avgMachineTaskTimes[machine] = avgMachineTime
+		
+	machineKeys = avgMachineTaskTimes.keys()
+	machineKeys.sort()
+	print 'machine\tnormalizedAverageTaskTime'
+	for machine in machineKeys:
+		print str(machine) + '\t' + str(avgMachineTaskTimes[machine])
+		
+
+def populateJobDetails(jobFName, confDir, jobs, tasks):
+	jobId, launchTime, tasksToTimes, tasksToMachine = getJobDetails(jobFName)
 	if (jobId is None):
 		return
-	# job_201007061619_2873
+	# e.g. job_201007061619_2873
 	logging.debug('jobId: %s', jobId)
 	if logger.isEnabledFor(logging.DEBUG):
-		logging.debug('times for machine: %s', timesForMachine.items())
+		logging.debug('tasks to times: %s', tasksToTimes.items())
 	confFName = CONF_FILE_FORMAT % {'jobId': jobId}
-	confFiles = glob.glob(confDir + '/' + confFName)
+	confFiles = glob.glob(os.path.join(confDir,confFName))
 	logging.debug('conf file matches: %s', confFiles)
 	confFName = confFiles[0]
-	confFile = open(confFName)
-	mapredMapperClass = None
-	for line in confFile:
+	mapClass = parseJobMapClass(confFName)
+	if mapClass is None:
+		logging.warn("map class wasn't found, most likely job was configured via jar argument. skipping file [%s]", jobFName)
+		return;
+	logging.debug('mapred map class: %s', mapClass)
+	# add job to jobs list
+	jobs.append(tuple([jobId, mapClass, launchTime]))
+	# populate task details
+	for task in tasksToTimes.keys():
+		tasks.append(tuple([jobId, mapClass, launchTime, task, tasksToMachine[task], tasksToTimes[task]]))
+		
+
+def parseJobMapClass(confFName):
+	for line in open(confFName):
 		if line.find(MAPRED_MAPPER_CLASS_KEY_NAMES[0]) != -1 or line.find(MAPRED_MAPPER_CLASS_KEY_NAMES[1]) != -1:
 			# <property><name>...</name><value>...</value></property>
 			valueIndex = line.index('<value>')
-			mapredMapperClass = line[line.index('<value>')+len('<value>'):line.index('</value>')]
-			break
-	if mapredMapperClass is None:
-		logging.warn("mapred mapper class wasn't found, most likely job was configured via jar argument. skipping jobId [%s]", jobId)
-		return;
-	logging.debug('mapred map class: %s', mapredMapperClass)
+			return line[line.index('<value>')+len('<value>'):line.index('</value>')]
 
-
-
-def getMachineTimes(fname):
+def getJobDetails(fname):
 	logging.debug('Parsing log file [%s]', fname)
-	jobId = ''
+	jobId = None
+	launchTime = None
 	mapTaskStartTimes = dict()
-	tasksToMachine = dict()
+	taskToMachine = dict()
 	mapTaskEndTimes = dict()
 	f = open(fname, 'r')
 	# Meta VERSION \"1\" .    <- first line
 	
 	# TODO
-	# mapred.mapper.class
 	# total job time
 	# job total map input bytes
 	
@@ -105,21 +157,23 @@ def getMachineTimes(fname):
 		if lineType == 'Meta':
 			continue
 		if lineType == 'Job':
-			if jobId == '':
+			if jobId is None:
 				jobId = parseValue(words[1])
+			if launchTime is None:
+				launchTime = findValueForKey(words, 'LAUNCH_TIME')
 			# filter out killed and failed jobs
 			if findKeyValue(words, 'JOB_STATUS', 'KILLED'):
 				logging.warn("skipping job because job was killed. job file [%s]", fname)
-				return None, None
+				return None, None, None, None
 			if findKeyValue(words, 'JOB_STATUS', 'FAILED'):
 				logging.warn("skipping job because job failed. job file [%s]", fname)
-				return None, None
+				return None, None, None, None
 		# log file has in order start times and finish times
 		if lineType == 'MapAttempt' and findKeyValue(words, 'TASK_TYPE', 'MAP'):
 			# map attempt start time lines dont have a task_status key and value
 			countValueIfHasValueKey(mapTaskStartTimes, words, 'TASK_ATTEMPT_ID', 'START_TIME')
 			if findKeyValue(words, 'TASK_STATUS', 'SUCCESS'):
-				countKeyValues(tasksToMachine, words, 'TASK_ATTEMPT_ID', 'HOSTNAME')
+				countKeyValues(taskToMachine, words, 'TASK_ATTEMPT_ID', 'HOSTNAME')
 				countKeyValues(mapTaskEndTimes, words, 'TASK_ATTEMPT_ID', 'FINISH_TIME')	
 			# remove failed and killed task attempts
 			if findKeyValue(words, 'TASK_STATUS', 'FAILED'):
@@ -129,35 +183,19 @@ def getMachineTimes(fname):
 				findAndRemoveValueForKey(mapTaskStartTimes, words, 'TASK_ATTEMPT_ID')
 				findAndRemoveValueForKey(mapTaskEndTimes, words, 'TASK_ATTEMPT_ID')
 				
-			
-				
-
-
 	# clean up machine strings	
-	for task in tasksToMachine:
-		tasksToMachine[task] = tasksToMachine[task].replace("\\.", ".")
-	
-	# for item in mapTaskStartTimes.items():
-	# 	print item		
-	#print
-	# for item in mapTaskEndTimes.items():
-	# 	print item		
-	#print
-	# for item in tasksToMachine.items():
-		# print item		
-	times = dict()
+	for task in taskToMachine:
+		taskToMachine[task] = taskToMachine[task].replace("\\.", ".")
+
 	if len(mapTaskStartTimes) != len(mapTaskEndTimes):
 		raise Exception("couldn't find matching start and end times for map tasks in log file", fname)
+
+	taskToTime = dict()
 	for key in mapTaskEndTimes.keys():
 		diff = long(mapTaskEndTimes[key]) - long(mapTaskStartTimes[key])
-		times[key] = diff
-	timesForMachine = dict()
-	for key in times.keys():
-		machineKey = tasksToMachine[key]
-		if machineKey not in timesForMachine:
-			timesForMachine[machineKey] = []
-		timesForMachine[machineKey].append(times[key])
-	return jobId, timesForMachine
+		taskToTime[key] = diff
+
+	return jobId, launchTime, taskToTime, taskToMachine
 			
 # ignore if not in there
 def findAndRemoveValueForKey(map, words, key):
